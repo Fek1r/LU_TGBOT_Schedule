@@ -29,8 +29,8 @@ bot = Bot(
 )
 dp = Dispatcher()
 
-# Tracks the current nav message per chat (ephemeral — lost on restart)
-_home_msg: dict[int, int] = {}
+# All bot message IDs per chat — deleted before showing anything new
+_user_msgs: dict[int, list[int]] = {}
 
 
 # ── Keyboards ─────────────────────────────────────────────────────────────────
@@ -58,7 +58,6 @@ def back_kb(lang: str) -> InlineKeyboardMarkup:
 
 
 def menu_kb(lang: str) -> InlineKeyboardMarkup:
-    """Used on broadcast messages so user can open the nav from there."""
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=t(lang, "btn_menu"), callback_data="nav:open"),
     ]])
@@ -72,7 +71,22 @@ def lang_kb() -> InlineKeyboardMarkup:
     ]])
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Message tracking helpers ──────────────────────────────────────────────────
+
+async def _cleanup(chat_id: int) -> None:
+    """Delete all tracked bot messages for this chat."""
+    for mid in _user_msgs.pop(chat_id, []):
+        try:
+            await bot.delete_message(chat_id, mid)
+        except TelegramBadRequest:
+            pass
+
+
+def _track(chat_id: int, *msg_ids: int) -> None:
+    _user_msgs[chat_id] = list(msg_ids)
+
+
+# ── Fetch / misc helpers ──────────────────────────────────────────────────────
 
 async def _fetch(week_offset: int = 0) -> list[Lesson]:
     loop = asyncio.get_event_loop()
@@ -96,33 +110,19 @@ async def _lang(chat_id: int) -> str:
 
 
 async def _send_home(chat_id: int, lang: str) -> None:
-    """Send a fresh nav menu message and track its ID."""
+    await _cleanup(chat_id)
     msg = await bot.send_message(
         chat_id,
         t(lang, "welcome", group=config.GROUP_ID),
         reply_markup=nav_kb(lang),
     )
-    _home_msg[chat_id] = msg.message_id
-
-
-async def _edit_to_home(callback: types.CallbackQuery, lang: str) -> None:
-    """Edit the current callback message back to the nav menu."""
-    try:
-        await callback.message.edit_text(
-            t(lang, "welcome", group=config.GROUP_ID),
-            reply_markup=nav_kb(lang),
-        )
-        _home_msg[callback.message.chat.id] = callback.message.message_id
-    except TelegramBadRequest:
-        # Message was deleted or can't be edited — send a new one
-        await _send_home(callback.message.chat.id, lang)
+    _track(chat_id, msg.message_id)
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message) -> None:
-    # Send invisible message just to strip the old Reply Keyboard, then delete it
     stub = await message.answer(".", reply_markup=ReplyKeyboardRemove())
     try:
         await stub.delete()
@@ -131,10 +131,11 @@ async def cmd_start(message: types.Message) -> None:
 
     sub = await storage.get_subscriber(message.chat.id)
     if sub is None:
-        await message.answer(
+        msg = await message.answer(
             t(config.DEFAULT_LANGUAGE, "choose_language"),
             reply_markup=lang_kb(),
         )
+        _track(message.chat.id, msg.message_id)
     else:
         await storage.upsert_subscriber(message.chat.id, sub["language"])
         await _send_home(message.chat.id, sub["language"])
@@ -158,7 +159,9 @@ async def cmd_stop(message: types.Message) -> None:
 @dp.message(Command("language"))
 async def cmd_language(message: types.Message) -> None:
     lang = await _lang(message.chat.id)
-    await message.answer(t(lang, "choose_language"), reply_markup=lang_kb())
+    await _cleanup(message.chat.id)
+    msg = await message.answer(t(lang, "choose_language"), reply_markup=lang_kb())
+    _track(message.chat.id, msg.message_id)
 
 
 @dp.message(Command("help"))
@@ -182,9 +185,12 @@ async def cb_language(callback: types.CallbackQuery) -> None:
         if not sub["is_active"]:
             await storage.upsert_subscriber(chat_id, chosen)
 
-    await callback.message.edit_text(t(chosen, "language_set"))
-    await _send_home(chat_id, chosen)
     await callback.answer()
+    await _cleanup(chat_id)
+    msg = await bot.send_message(chat_id, t(chosen, "language_set"))
+    # immediately replace with home menu
+    await bot.delete_message(chat_id, msg.message_id)
+    await _send_home(chat_id, chosen)
 
 
 # ── Navigation callbacks ──────────────────────────────────────────────────────
@@ -195,26 +201,24 @@ async def cb_nav(callback: types.CallbackQuery) -> None:
     chat_id = callback.message.chat.id
     lang    = await _lang(chat_id)
 
+    await callback.answer()
+
     # ── Back / open menu ──────────────────────────────────────────────────────
     if action in ("back", "open"):
-        await _edit_to_home(callback, lang)
-        await callback.answer()
+        await _send_home(chat_id, lang)
         return
 
     # ── Language picker ───────────────────────────────────────────────────────
     if action == "language":
-        try:
-            await callback.message.edit_text(
-                t(lang, "choose_language"), reply_markup=lang_kb()
-            )
-        except TelegramBadRequest:
-            pass
-        await callback.answer()
+        await _cleanup(chat_id)
+        msg = await bot.send_message(
+            chat_id, t(lang, "choose_language"), reply_markup=lang_kb()
+        )
+        _track(chat_id, msg.message_id)
         return
 
-    # ── Today / Tomorrow (edit in place) ─────────────────────────────────────
+    # ── Today / Tomorrow ─────────────────────────────────────────────────────
     if action in ("today", "tomorrow"):
-        await callback.answer()
         try:
             if action == "today":
                 lessons = await _fetch(0)
@@ -223,64 +227,48 @@ async def cb_nav(callback: types.CallbackQuery) -> None:
                 target  = date.today() + timedelta(days=1)
                 lessons = await _fetch(_offset_for(target))
             text = fmt_day(lessons, target, lang)
-            try:
-                await callback.message.edit_text(text, reply_markup=back_kb(lang))
-                _home_msg[chat_id] = callback.message.message_id
-            except TelegramBadRequest:
-                msg = await bot.send_message(chat_id, text, reply_markup=back_kb(lang))
-                _home_msg[chat_id] = msg.message_id
         except Exception as exc:
             logger.error("nav:%s failed: %s", action, exc)
-            try:
-                await callback.message.edit_text(t(lang, "error"), reply_markup=back_kb(lang))
-            except TelegramBadRequest:
-                pass
+            text = t(lang, "error")
+
+        await _cleanup(chat_id)
+        msg = await bot.send_message(chat_id, text, reply_markup=back_kb(lang))
+        _track(chat_id, msg.message_id)
         return
 
-    # ── Week / Next week (delete + send day blocks) ───────────────────────────
+    # ── Week / Next week ──────────────────────────────────────────────────────
     if action in ("week", "nextweek"):
-        await callback.answer()
         offset = 0 if action == "week" else 1
         try:
             lessons = await _fetch(offset)
-            if not lessons:
-                try:
-                    await callback.message.edit_text(
-                        t(lang, "no_lessons_week"), reply_markup=back_kb(lang)
-                    )
-                    _home_msg[chat_id] = callback.message.message_id
-                except TelegramBadRequest:
-                    pass
-                return
-
-            # Delete current nav message, send day blocks, back button on last
-            try:
-                await callback.message.delete()
-            except TelegramBadRequest:
-                pass
-
-            blocks = fmt_week(lessons, lang)
-            last_msg = None
-            for i, block in enumerate(blocks):
-                is_last = (i == len(blocks) - 1)
-                last_msg = await bot.send_message(
-                    chat_id,
-                    block,
-                    reply_markup=back_kb(lang) if is_last else None,
-                )
-            if last_msg:
-                _home_msg[chat_id] = last_msg.message_id
-
         except Exception as exc:
             logger.error("nav:%s failed: %s", action, exc)
-            try:
-                msg = await bot.send_message(chat_id, t(lang, "error"), reply_markup=back_kb(lang))
-                _home_msg[chat_id] = msg.message_id
-            except Exception:
-                pass
-        return
+            await _cleanup(chat_id)
+            msg = await bot.send_message(chat_id, t(lang, "error"), reply_markup=back_kb(lang))
+            _track(chat_id, msg.message_id)
+            return
 
-    await callback.answer()
+        await _cleanup(chat_id)
+
+        if not lessons:
+            msg = await bot.send_message(
+                chat_id, t(lang, "no_lessons_week"), reply_markup=back_kb(lang)
+            )
+            _track(chat_id, msg.message_id)
+            return
+
+        blocks   = fmt_week(lessons, lang)
+        msg_ids  = []
+        for i, block in enumerate(blocks):
+            is_last = (i == len(blocks) - 1)
+            msg = await bot.send_message(
+                chat_id,
+                block,
+                reply_markup=back_kb(lang) if is_last else None,
+            )
+            msg_ids.append(msg.message_id)
+        _track(chat_id, *msg_ids)
+        return
 
 
 # ── Startup / shutdown ────────────────────────────────────────────────────────
