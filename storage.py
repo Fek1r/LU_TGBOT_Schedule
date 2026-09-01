@@ -5,6 +5,7 @@ Tables:
   schedule_state — persisted lesson states for cancellation detection
 """
 import logging
+import os
 from pathlib import Path
 
 import aiosqlite
@@ -12,7 +13,7 @@ import aiosqlite
 from scraper import Lesson
 
 logger  = logging.getLogger(__name__)
-DB_PATH = Path("bot.db")
+DB_PATH = Path(os.getenv("DB_PATH", "bot.db"))
 
 
 async def init_db() -> None:
