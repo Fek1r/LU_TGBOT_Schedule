@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Optional: keeps the bot alive across terminal closes, crashes and logins.
+  Not installed by default — copying it into ~/Library/LaunchAgents is your call.
+
+  Install:
+    cp launchd.plist ~/Library/LaunchAgents/com.lu-schedule-bot.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lu-schedule-bot.plist
+
+  Uninstall:
+    launchctl bootout gui/$(id -u)/com.lu-schedule-bot
+    rm ~/Library/LaunchAgents/com.lu-schedule-bot.plist
+
+  Kill the nohup'd instance first — two pollers on one token means 409 Conflict.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.lu-schedule-bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/fek1r/Desktop/lu-schedule-bot/venv/bin/python</string>
+        <string>main.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/fek1r/Desktop/lu-schedule-bot</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/fek1r/Desktop/lu-schedule-bot/bot.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/fek1r/Desktop/lu-schedule-bot/bot.log</string>
+</dict>
+</plist>

@@ -89,7 +89,8 @@ async def _fetch(week_offset: int = 0) -> list[Lesson]:
 
 
 def _offset_for(target: date) -> int:
-    monday = date.today() - timedelta(days=date.today().weekday())
+    today  = config.today()
+    monday = today - timedelta(days=today.weekday())
     if target >= monday + timedelta(days=7):
         return 1
     if target < monday:
@@ -215,9 +216,9 @@ async def cb_nav(callback: types.CallbackQuery) -> None:
         try:
             if action == "today":
                 lessons = await _fetch(0)
-                target  = date.today()
+                target  = config.today()
             else:
-                target  = date.today() + timedelta(days=1)
+                target  = config.today() + timedelta(days=1)
                 lessons = await _fetch(_offset_for(target))
             text = fmt_day(lessons, target, lang)
         except Exception as exc:

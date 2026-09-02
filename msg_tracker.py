@@ -6,7 +6,14 @@ _user_msgs: dict[int, list[int]] = {}
 
 
 def track(chat_id: int, *msg_ids: int) -> None:
-    _user_msgs[chat_id] = list(msg_ids)
+    """Remember bot messages so they can be cleaned up later.
+
+    Appends — it deliberately does NOT replace. The old version overwrote the
+    list, so two messages sent seconds apart forgot about each other and the
+    second one cheerfully deleted the first. Great for tidiness, terrible for
+    actually reading your reminders.
+    """
+    _user_msgs.setdefault(chat_id, []).extend(msg_ids)
 
 
 async def cleanup(bot: Bot, chat_id: int) -> None:
