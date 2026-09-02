@@ -14,6 +14,7 @@ import config
 import storage
 from formatter import fmt_day, fmt_week, fmt_lesson, lesson_title
 from locales import t
+from msg_tracker import cleanup as _cleanup_msgs, track as _track_msgs
 from scraper import Lesson, fetch_schedule
 
 logger    = logging.getLogger(__name__)
@@ -44,11 +45,13 @@ async def _broadcast(bot: Bot, text_fn, with_menu: bool = True) -> None:
         chat_id = sub["chat_id"]
         lang    = sub["language"]
         try:
-            await bot.send_message(
+            await _cleanup_msgs(bot, chat_id)
+            msg = await bot.send_message(
                 chat_id,
                 text_fn(lang),
                 reply_markup=_menu_kb(lang) if with_menu else None,
             )
+            _track_msgs(chat_id, msg.message_id)
         except TelegramForbiddenError:
             logger.warning("Bot blocked by %s — deactivating", chat_id)
             await storage.deactivate(chat_id)

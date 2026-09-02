@@ -66,10 +66,16 @@ def _break_minutes(end: str, start: str) -> int:
 
 
 def fmt_day(lessons: list[Lesson], for_date: date, lang: str) -> str:
-    day_lessons = sorted(
-        [l for l in lessons if l.date == for_date],
-        key=lambda l: l.time_start,
-    )
+    seen: set[tuple] = set()
+    unique: list[Lesson] = []
+    for l in lessons:
+        if l.date != for_date:
+            continue
+        key = (l.time_start, l.time_end, l.module_id, l.staff, l.room)
+        if key not in seen:
+            seen.add(key)
+            unique.append(l)
+    day_lessons = sorted(unique, key=lambda l: l.time_start)
     lv_key = day_lessons[0].day if day_lessons else ""
     header = f"📅 <b>{_day_name(for_date, lv_key, lang)}, {for_date.strftime('%d.%m.%Y')}</b>"
 

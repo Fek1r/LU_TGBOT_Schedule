@@ -19,6 +19,7 @@ import storage
 import scheduler as sched
 from formatter import fmt_day, fmt_week
 from locales import t
+from msg_tracker import cleanup as _cleanup_msgs, track as _track_msgs
 from scraper import fetch_schedule, Lesson
 
 logger = logging.getLogger(__name__)
@@ -28,9 +29,6 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher()
-
-# All bot message IDs per chat — deleted before showing anything new
-_user_msgs: dict[int, list[int]] = {}
 
 
 # ── Keyboards ─────────────────────────────────────────────────────────────────
@@ -74,16 +72,11 @@ def lang_kb() -> InlineKeyboardMarkup:
 # ── Message tracking helpers ──────────────────────────────────────────────────
 
 async def _cleanup(chat_id: int) -> None:
-    """Delete all tracked bot messages for this chat."""
-    for mid in _user_msgs.pop(chat_id, []):
-        try:
-            await bot.delete_message(chat_id, mid)
-        except TelegramBadRequest:
-            pass
+    await _cleanup_msgs(bot, chat_id)
 
 
 def _track(chat_id: int, *msg_ids: int) -> None:
-    _user_msgs[chat_id] = list(msg_ids)
+    _track_msgs(chat_id, *msg_ids)
 
 
 # ── Fetch / misc helpers ──────────────────────────────────────────────────────
