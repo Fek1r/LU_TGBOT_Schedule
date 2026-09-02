@@ -11,7 +11,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import (
     InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardRemove,
+    LinkPreviewOptions, ReplyKeyboardRemove,
 )
 
 import config
@@ -23,6 +23,10 @@ from msg_tracker import cleanup as _cleanup_msgs, track as _track_msgs
 from scraper import fetch_schedule, Lesson
 
 logger = logging.getLogger(__name__)
+
+# The disclaimer name-drops lekciju-saraksts.lu.lv; Telegram would happily
+# staple a preview card to it. It would not.
+_NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 bot = Bot(
     token=config.TELEGRAM_BOT_TOKEN,
@@ -45,6 +49,9 @@ def nav_kb(lang: str) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🌐 Язык / Language / Valoda", callback_data="nav:language"),
+        ],
+        [
+            InlineKeyboardButton(text=t(lang, "btn_about"), callback_data="nav:about"),
         ],
     ])
 
@@ -158,6 +165,18 @@ async def cmd_language(message: types.Message) -> None:
     _track(message.chat.id, msg.message_id)
 
 
+@dp.message(Command("about"))
+async def cmd_about(message: types.Message) -> None:
+    lang = await _lang(message.chat.id)
+    await _cleanup(message.chat.id)
+    msg = await message.answer(
+        t(lang, "about"),
+        reply_markup=back_kb(lang),
+        link_preview_options=_NO_PREVIEW,
+    )
+    _track(message.chat.id, msg.message_id)
+
+
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message) -> None:
     lang = await _lang(message.chat.id)
@@ -207,6 +226,18 @@ async def cb_nav(callback: types.CallbackQuery) -> None:
         await _cleanup(chat_id)
         msg = await bot.send_message(
             chat_id, t(lang, "choose_language"), reply_markup=lang_kb()
+        )
+        _track(chat_id, msg.message_id)
+        return
+
+    # ── About / disclaimer ────────────────────────────────────────────────────
+    if action == "about":
+        await _cleanup(chat_id)
+        msg = await bot.send_message(
+            chat_id,
+            t(lang, "about"),
+            reply_markup=back_kb(lang),
+            link_preview_options=_NO_PREVIEW,
         )
         _track(chat_id, msg.message_id)
         return
