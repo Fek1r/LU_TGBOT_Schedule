@@ -34,6 +34,12 @@ LOCALES: dict[str, dict] = {
             "за пропущенные пары.\n\n"
             "Что-то важное — перепроверяй на официальном сайте 🙂"
         ),
+        "commands": {
+            "start":    "Меню и подписка на уведомления",
+            "language": "Сменить язык интерфейса",
+            "about":    "Об авторе и дисклеймер",
+            "stop":     "Отписаться от уведомлений",
+        },
         "days": {
             "Pr": "Понедельник", "Ot": "Вторник", "Tr": "Среда",
             "Ce": "Четверг",     "Pk": "Пятница",  "Se": "Суббота",
@@ -75,6 +81,12 @@ LOCALES: dict[str, dict] = {
             "no responsibility for missed classes.\n\n"
             "Double-check anything important on the official site 🙂"
         ),
+        "commands": {
+            "start":    "Menu and notification subscription",
+            "language": "Change interface language",
+            "about":    "Author and disclaimer",
+            "stop":     "Unsubscribe from notifications",
+        },
         "days": {
             "Pr": "Monday",   "Ot": "Tuesday",   "Tr": "Wednesday",
             "Ce": "Thursday", "Pk": "Friday",     "Se": "Saturday",
@@ -116,6 +128,12 @@ LOCALES: dict[str, dict] = {
             "nodarbībām.\n\n"
             "Ko svarīgu — pārbaudi oficiālajā vietnē 🙂"
         ),
+        "commands": {
+            "start":    "Izvēlne un paziņojumu abonēšana",
+            "language": "Mainīt saskarnes valodu",
+            "about":    "Par autoru un atruna",
+            "stop":     "Atteikties no paziņojumiem",
+        },
         "days": {
             "Pr": "Pirmdiena",  "Ot": "Otrdiena",  "Tr": "Trešdiena",
             "Ce": "Ceturtdiena","Pk": "Piektdiena", "Se": "Sestdiena",

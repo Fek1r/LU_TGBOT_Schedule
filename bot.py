@@ -10,6 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import (
+    BotCommand, BotCommandScopeChat, BotCommandScopeDefault,
     InlineKeyboardButton, InlineKeyboardMarkup,
     LinkPreviewOptions, ReplyKeyboardRemove,
 )
@@ -18,7 +19,7 @@ import config
 import storage
 import scheduler as sched
 from formatter import fmt_day, fmt_week
-from locales import t
+from locales import LOCALES, t
 from msg_tracker import cleanup as _cleanup_msgs, track as _track_msgs
 from scraper import fetch_schedule, Lesson
 
@@ -33,6 +34,42 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher()
+
+
+# ── Command menu ──────────────────────────────────────────────────────────────
+
+# Order matters — this is the order Telegram shows them in the ☰ menu.
+_COMMANDS = ("start", "language", "about", "stop")
+
+
+def _command_list(lang: str) -> list[BotCommand]:
+    descriptions = LOCALES.get(lang, LOCALES["ru"])["commands"]
+    return [BotCommand(command=c, description=descriptions[c]) for c in _COMMANDS]
+
+
+async def _apply_commands(chat_id: int, lang: str) -> None:
+    """Set the ☰ menu for one chat in the language they picked in the bot.
+
+    Telegram's own language_code targeting follows the user's *client* language,
+    which has no idea our language picker exists. Per-chat scope does.
+    """
+    try:
+        await bot.set_my_commands(
+            _command_list(lang), scope=BotCommandScopeChat(chat_id=chat_id)
+        )
+    except TelegramBadRequest as exc:
+        logger.warning("Could not set commands for %s: %s", chat_id, exc)
+
+
+async def _apply_default_commands() -> None:
+    """Baseline menu for anyone who has not picked a language yet."""
+    await bot.set_my_commands(
+        _command_list(config.DEFAULT_LANGUAGE), scope=BotCommandScopeDefault()
+    )
+    for lang in LOCALES:
+        await bot.set_my_commands(
+            _command_list(lang), scope=BotCommandScopeDefault(), language_code=lang
+        )
 
 
 # ── Keyboards ─────────────────────────────────────────────────────────────────
@@ -139,6 +176,7 @@ async def cmd_start(message: types.Message) -> None:
         _track(message.chat.id, msg.message_id)
     else:
         await storage.upsert_subscriber(message.chat.id, sub["language"])
+        await _apply_commands(message.chat.id, sub["language"])
         await _send_home(message.chat.id, sub["language"])
 
 
@@ -197,6 +235,8 @@ async def cb_language(callback: types.CallbackQuery) -> None:
         await storage.set_language(chat_id, chosen)
         if not sub["is_active"]:
             await storage.upsert_subscriber(chat_id, chosen)
+
+    await _apply_commands(chat_id, chosen)
 
     await callback.answer()
     await _cleanup(chat_id)
@@ -300,6 +340,7 @@ async def cb_nav(callback: types.CallbackQuery) -> None:
 
 async def on_startup() -> None:
     await storage.init_db()
+    await _apply_default_commands()
     sched.setup(bot)
 
     try:
