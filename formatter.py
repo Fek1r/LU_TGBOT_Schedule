@@ -59,10 +59,65 @@ def fmt_lesson(lesson: Lesson, lang: str) -> str:
     return "\n".join([header] + middle + [bottom])
 
 
+def _fmt_parallel_group(lessons: list[Lesson], lang: str) -> str:
+    """Format parallel sub-groups of the same lesson as a single collapsed block."""
+    first = lessons[0]
+    title = escape(lesson_title(first, lang))
+    ev    = _ev_type(first.event_type, lang)
+
+    header = f"┌ {first.time_start} – {first.time_end}"
+    if ev:
+        header += f" ─ {escape(ev)}"
+
+    all_cancelled = all(l.is_cancelled for l in lessons)
+    title_display = f"<s>{title}</s>" if all_cancelled else f"<b>{title}</b>"
+    title_line = f"│ 📚 {title_display}"
+
+    rows: list[str] = []
+    for i, lesson in enumerate(lessons):
+        is_last = (i == len(lessons) - 1)
+        prefix  = "└ └" if is_last else "│ ├"
+
+        parts: list[str] = []
+        if lesson.online:
+            parts.append(f"🌐 {t(lang, 'online_label')}")
+        elif lesson.room:
+            loc = escape(lesson.room)
+            if lesson.room_building and lesson.room_building not in ("", "None"):
+                loc += f", {escape(lesson.room_building)}"
+            parts.append(f"🏛 {loc}")
+        if lesson.staff:
+            parts.append(f"👤 {escape(lesson.staff)}")
+
+        content = "  ".join(parts)
+        if lesson.is_cancelled:
+            rows.append(f"{prefix} <s>{content}</s> ❌")
+        else:
+            rows.append(f"{prefix} {content}")
+
+    return "\n".join([header, title_line] + rows)
+
+
 def _break_minutes(end: str, start: str) -> int:
     e = _dt.strptime(end, "%H:%M")
     s = _dt.strptime(start, "%H:%M")
     return max(0, int((s - e).total_seconds() // 60))
+
+
+def _group_parallel(day_lessons: list[Lesson]) -> list[list[Lesson]]:
+    """
+    Cluster lessons that are the same subject at the same time into groups.
+    Different subjects at overlapping times stay separate.
+    """
+    groups: list[list[Lesson]] = []
+    key_to_idx: dict[tuple, int] = {}
+    for l in day_lessons:
+        gkey = (l.time_start, l.time_end, l.module_id or l.title, l.event_type)
+        if gkey not in key_to_idx:
+            key_to_idx[gkey] = len(groups)
+            groups.append([])
+        groups[key_to_idx[gkey]].append(l)
+    return groups
 
 
 def fmt_day(lessons: list[Lesson], for_date: date, lang: str) -> str:
@@ -76,17 +131,19 @@ def fmt_day(lessons: list[Lesson], for_date: date, lang: str) -> str:
             seen.add(key)
             unique.append(l)
     day_lessons = sorted(unique, key=lambda l: l.time_start)
+
     lv_key = day_lessons[0].day if day_lessons else ""
     header = f"📅 <b>{_day_name(for_date, lv_key, lang)}, {for_date.strftime('%d.%m.%Y')}</b>"
 
     if not day_lessons:
         return f"{header}\n\n{t(lang, 'no_classes')}"
 
+    slots  = _group_parallel(day_lessons)
     blocks: list[str] = []
-    for i, lesson in enumerate(day_lessons):
-        blocks.append(fmt_lesson(lesson, lang))
-        if i < len(day_lessons) - 1:
-            gap = _break_minutes(lesson.time_end, day_lessons[i + 1].time_start)
+    for i, slot in enumerate(slots):
+        blocks.append(_fmt_parallel_group(slot, lang) if len(slot) > 1 else fmt_lesson(slot[0], lang))
+        if i < len(slots) - 1:
+            gap = _break_minutes(slot[0].time_end, slots[i + 1][0].time_start)
             if gap > 0:
                 blocks.append(t(lang, "break", minutes=gap))
 
