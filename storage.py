@@ -1,7 +1,7 @@
 """
 SQLite storage via aiosqlite.
 Tables:
-  subscribers    — one row per Telegram chat_id
+  subscribers    — one row per Telegram chat_id, including its chosen group
   schedule_state — persisted lesson states for cancellation detection
 """
 import logging
@@ -10,10 +10,20 @@ from pathlib import Path
 
 import aiosqlite
 
+import config
 from scraper import Lesson
 
 logger  = logging.getLogger(__name__)
 DB_PATH = Path(os.getenv("DB_PATH", "bot.db"))
+
+
+async def _migrate(db: aiosqlite.Connection) -> None:
+    """Additive, idempotent schema catch-up for databases created earlier."""
+    async with db.execute("PRAGMA table_info(subscribers)") as cur:
+        columns = {row[1] async for row in cur}
+    if "group_id" not in columns:
+        await db.execute("ALTER TABLE subscribers ADD COLUMN group_id TEXT")
+        logger.info("Migrated subscribers: added group_id")
 
 
 async def init_db() -> None:
@@ -30,18 +40,24 @@ async def init_db() -> None:
                 state TEXT NOT NULL
             );
         """)
+        await _migrate(db)
         await db.commit()
+
+
+def _with_default(row: dict) -> dict:
+    row["group_id"] = row.get("group_id") or config.GROUP_ID
+    return row
 
 
 async def get_subscriber(chat_id: int) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT chat_id, is_active, language FROM subscribers WHERE chat_id = ?",
+            "SELECT chat_id, is_active, language, group_id FROM subscribers WHERE chat_id = ?",
             (chat_id,),
         ) as cur:
             row = await cur.fetchone()
-            return dict(row) if row else None
+            return _with_default(dict(row)) if row else None
 
 
 async def upsert_subscriber(chat_id: int, language: str = "ru") -> bool:
@@ -78,6 +94,14 @@ async def set_language(chat_id: int, language: str) -> None:
         await db.commit()
 
 
+async def set_group(chat_id: int, group_id: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE subscribers SET group_id = ? WHERE chat_id = ?", (group_id, chat_id)
+        )
+        await db.commit()
+
+
 async def deactivate(chat_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -90,36 +114,46 @@ async def get_active_subscribers() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT chat_id, language FROM subscribers WHERE is_active = 1"
+            "SELECT chat_id, language, group_id FROM subscribers WHERE is_active = 1"
         ) as cur:
-            rows = await cur.fetchall()
-            return [dict(r) for r in rows]
+            return [_with_default(dict(r)) for r in await cur.fetchall()]
 
 
-async def find_newly_cancelled(lessons: list[Lesson]) -> list[Lesson]:
+async def active_group_ids() -> list[str]:
+    """Every distinct group someone is actually subscribed to."""
+    return sorted({sub["group_id"] for sub in await get_active_subscribers()})
+
+
+async def find_newly_cancelled(group_id: str, lessons: list[Lesson]) -> list[Lesson]:
     """
     Compare current lesson states against stored states.
     Returns lessons that newly changed to 'Cancelled'.
     Updates stored states as a side-effect.
+
+    State keys are namespaced by group: the same lesson uid shows up in several
+    groups, and one group's bookkeeping must not answer for another's.
     """
+    def key(lesson: Lesson) -> str:
+        return f"{group_id}|{lesson.uid}"
+
     async with aiosqlite.connect(DB_PATH) as db:
-        uids = [l.uid for l in lessons]
-        placeholders = ",".join("?" * len(uids))
+        keys = [key(l) for l in lessons]
+        placeholders = ",".join("?" * len(keys))
         async with db.execute(
             f"SELECT uid, state FROM schedule_state WHERE uid IN ({placeholders})",
-            uids,
+            keys,
         ) as cur:
             prev_states: dict[str, str] = {row[0]: row[1] async for row in cur}
 
         changed: list[Lesson] = []
         for lesson in lessons:
-            if lesson.is_cancelled and prev_states.get(lesson.uid) != "Cancelled":
+            if lesson.is_cancelled and prev_states.get(key(lesson)) != "Cancelled":
                 changed.append(lesson)
 
         await db.executemany(
             "INSERT INTO schedule_state (uid, state) VALUES (?, ?)"
             " ON CONFLICT(uid) DO UPDATE SET state = excluded.state",
-            [(l.uid, l.state) for l in lessons],
+            [(key(l), l.state) for l in lessons],
         )
         await db.commit()
 

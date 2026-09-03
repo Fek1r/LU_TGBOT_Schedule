@@ -13,6 +13,7 @@ Scrapes [lekciju-saraksts.lu.lv](https://lekciju-saraksts.lu.lv) directly — no
 - **Cancellation alerts** — monitors lesson status changes and notifies instantly
 - **Lesson reminders** — N minutes before each class
 - **Break times** — shows the gap between lessons right in the schedule
+- **Any group** — 1669 LU groups, searchable from inside the bot; every subscriber picks their own
 - **Multi-subscriber** — anyone can subscribe via `/start`, data stored in SQLite
 - **3 interface languages** — Русский / English / Latviešu, picked via inline button
 - **Inline navigation** — single message edited on each tap, chat stays clean
@@ -63,11 +64,12 @@ Fill in `.env`:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_token
-GROUP_ID=26R-22302-PLK-1        # LU group ID from the website URL
+GROUP_ID=26R-22302-PLK-1        # default group for new subscribers; each user can change it in the bot
 MORNING_NOTIFY_TIME=07:00       # time to send the morning digest
 REMINDER_MINUTES_BEFORE=15      # how many minutes before class to remind
 CHECK_INTERVAL_MINUTES=20       # how often to check for cancellations
 DEFAULT_LANGUAGE=ru             # fallback language: ru / en / lv
+TIMEZONE=Europe/Riga            # the university's timezone, not the server's
 ```
 
 > The group ID can be found in the URL on lekciju-saraksts.lu.lv, e.g. `26R-22302-PLK-1`
@@ -138,6 +140,8 @@ lu-schedule-bot/
 ├── main.py          — entry point
 ├── config.py        — settings from .env
 ├── scraper.py       — scrapes lekciju-saraksts.lu.lv
+├── groups.py        — the group catalogue: search and cache
+├── fetcher.py       — cached, de-duplicated access to the scraper
 ├── storage.py       — SQLite: subscribers + lesson states
 ├── locales.py       — UI strings (ru / en / lv)
 ├── formatter.py     — language-aware message formatting

@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from datetime import date, timedelta
-from functools import partial
+from html import escape
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
@@ -16,18 +16,24 @@ from aiogram.types import (
 )
 
 import config
+import fetcher
+import groups
 import storage
 import scheduler as sched
 from formatter import fmt_day, fmt_week
 from locales import LOCALES, t
 from msg_tracker import cleanup as _cleanup_msgs, track as _track_msgs
-from scraper import fetch_schedule, Lesson
+from scraper import Lesson
 
 logger = logging.getLogger(__name__)
 
 # The disclaimer name-drops lekciju-saraksts.lu.lv; Telegram would happily
 # staple a preview card to it. It would not.
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+
+# Chats that asked to change their group and whose next message is the query.
+# Deliberately in memory: losing it on restart costs the user one extra tap.
+_awaiting_group: set[int] = set()
 
 bot = Bot(
     token=config.TELEGRAM_BOT_TOKEN,
@@ -39,7 +45,7 @@ dp = Dispatcher()
 # ── Command menu ──────────────────────────────────────────────────────────────
 
 # Order matters — this is the order Telegram shows them in the ☰ menu.
-_COMMANDS = ("start", "language", "about", "stop")
+_COMMANDS = ("start", "group", "language", "about", "stop")
 
 
 def _command_list(lang: str) -> list[BotCommand]:
@@ -85,10 +91,13 @@ def nav_kb(lang: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=t(lang, "btn_nextweek"), callback_data="nav:nextweek"),
         ],
         [
+            InlineKeyboardButton(text=t(lang, "btn_group"),    callback_data="nav:group"),
+        ],
+        [
             InlineKeyboardButton(text="🌐 Язык / Language / Valoda", callback_data="nav:language"),
         ],
         [
-            InlineKeyboardButton(text=t(lang, "btn_about"), callback_data="nav:about"),
+            InlineKeyboardButton(text=t(lang, "btn_about"),    callback_data="nav:about"),
         ],
     ])
 
@@ -99,18 +108,21 @@ def back_kb(lang: str) -> InlineKeyboardMarkup:
     ]])
 
 
-def menu_kb(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=t(lang, "btn_menu"), callback_data="nav:open"),
-    ]])
-
-
 def lang_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="🇷🇺 Русский",  callback_data="lang:ru"),
         InlineKeyboardButton(text="🇬🇧 English",  callback_data="lang:en"),
         InlineKeyboardButton(text="🇱🇻 Latviešu", callback_data="lang:lv"),
     ]])
+
+
+def groups_kb(lang: str, found: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=groups.short_name(gid), callback_data=f"group:{gid}")]
+        for gid, _ in found
+    ]
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ── Message tracking helpers ──────────────────────────────────────────────────
@@ -123,13 +135,20 @@ def _track(chat_id: int, *msg_ids: int) -> None:
     _track_msgs(chat_id, *msg_ids)
 
 
+async def _replace(chat_id: int, text: str, markup=None, preview: bool = True) -> None:
+    """Wipe what the bot said before and say this instead."""
+    await _cleanup(chat_id)
+    msg = await bot.send_message(
+        chat_id, text, reply_markup=markup,
+        link_preview_options=None if preview else _NO_PREVIEW,
+    )
+    _track(chat_id, msg.message_id)
+
+
 # ── Fetch / misc helpers ──────────────────────────────────────────────────────
 
-async def _fetch(week_offset: int = 0) -> list[Lesson]:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None, partial(fetch_schedule, config.GROUP_ID, week_offset)
-    )
+async def _fetch(group_id: str, week_offset: int = 0) -> list[Lesson]:
+    return await fetcher.fetch(group_id, week_offset)
 
 
 def _offset_for(target: date) -> int:
@@ -142,19 +161,18 @@ def _offset_for(target: date) -> int:
     return 0
 
 
-async def _lang(chat_id: int) -> str:
+async def _sub(chat_id: int) -> dict:
+    """Subscriber row, or sensible defaults for someone who never pressed /start."""
     sub = await storage.get_subscriber(chat_id)
-    return sub["language"] if sub else config.DEFAULT_LANGUAGE
+    return sub or {"language": config.DEFAULT_LANGUAGE, "group_id": config.GROUP_ID}
 
 
-async def _send_home(chat_id: int, lang: str) -> None:
-    await _cleanup(chat_id)
-    msg = await bot.send_message(
+async def _send_home(chat_id: int, lang: str, group_id: str) -> None:
+    await _replace(
         chat_id,
-        t(lang, "welcome", group=config.GROUP_ID),
-        reply_markup=nav_kb(lang),
+        t(lang, "welcome", group=escape(groups.short_name(group_id))),
+        nav_kb(lang),
     )
-    _track(chat_id, msg.message_id)
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
@@ -169,15 +187,15 @@ async def cmd_start(message: types.Message) -> None:
 
     sub = await storage.get_subscriber(message.chat.id)
     if sub is None:
-        msg = await message.answer(
+        await _replace(
+            message.chat.id,
             t(config.DEFAULT_LANGUAGE, "choose_language"),
-            reply_markup=lang_kb(),
+            lang_kb(),
         )
-        _track(message.chat.id, msg.message_id)
     else:
         await storage.upsert_subscriber(message.chat.id, sub["language"])
         await _apply_commands(message.chat.id, sub["language"])
-        await _send_home(message.chat.id, sub["language"])
+        await _send_home(message.chat.id, sub["language"], sub["group_id"])
 
 
 # ── /stop ─────────────────────────────────────────────────────────────────────
@@ -193,32 +211,87 @@ async def cmd_stop(message: types.Message) -> None:
     await message.answer(t(lang, "unsubscribed"))
 
 
-# ── /language, /help ──────────────────────────────────────────────────────────
+# ── /language, /group, /about, /help ──────────────────────────────────────────
 
 @dp.message(Command("language"))
 async def cmd_language(message: types.Message) -> None:
-    lang = await _lang(message.chat.id)
-    await _cleanup(message.chat.id)
-    msg = await message.answer(t(lang, "choose_language"), reply_markup=lang_kb())
-    _track(message.chat.id, msg.message_id)
+    sub = await _sub(message.chat.id)
+    await _replace(message.chat.id, t(sub["language"], "choose_language"), lang_kb())
+
+
+@dp.message(Command("group"))
+async def cmd_group(message: types.Message) -> None:
+    sub = await _sub(message.chat.id)
+    await _prompt_for_group(message.chat.id, sub["language"], sub["group_id"])
 
 
 @dp.message(Command("about"))
 async def cmd_about(message: types.Message) -> None:
-    lang = await _lang(message.chat.id)
-    await _cleanup(message.chat.id)
-    msg = await message.answer(
-        t(lang, "about"),
-        reply_markup=back_kb(lang),
-        link_preview_options=_NO_PREVIEW,
-    )
-    _track(message.chat.id, msg.message_id)
+    sub = await _sub(message.chat.id)
+    await _replace(message.chat.id, t(sub["language"], "about"), back_kb(sub["language"]),
+                   preview=False)
 
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message) -> None:
-    lang = await _lang(message.chat.id)
-    await _send_home(message.chat.id, lang)
+    sub = await _sub(message.chat.id)
+    await _send_home(message.chat.id, sub["language"], sub["group_id"])
+
+
+# ── Group picking ─────────────────────────────────────────────────────────────
+
+async def _prompt_for_group(chat_id: int, lang: str, group_id: str) -> None:
+    _awaiting_group.add(chat_id)
+    await _replace(
+        chat_id,
+        t(lang, "group_prompt", group=escape(groups.short_name(group_id))),
+        back_kb(lang),
+    )
+
+
+@dp.callback_query(F.data.startswith("group:"))
+async def cb_group(callback: types.CallbackQuery) -> None:
+    chosen  = callback.data.split(":", 1)[1]
+    chat_id = callback.message.chat.id
+    sub     = await _sub(chat_id)
+
+    await callback.answer()
+    _awaiting_group.discard(chat_id)
+
+    if await storage.get_subscriber(chat_id) is None:
+        await storage.upsert_subscriber(chat_id, sub["language"])
+    await storage.set_group(chat_id, chosen)
+    logger.info("Chat %s switched to group %s", chat_id, chosen)
+
+    await _send_home(chat_id, sub["language"], chosen)
+
+
+# ── Any other text ────────────────────────────────────────────────────────────
+
+@dp.message(F.text)
+async def on_text(message: types.Message) -> None:
+    """Either a group search, or a gentle nudge back towards the buttons."""
+    chat_id = message.chat.id
+    sub     = await _sub(chat_id)
+    lang    = sub["language"]
+
+    if chat_id not in _awaiting_group:
+        await message.answer(t(lang, "hint"))
+        return
+
+    query = message.text.strip()
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        pass
+
+    found = await asyncio.to_thread(groups.search, query)
+    if not found:
+        await _replace(chat_id, t(lang, "group_none", query=escape(query)), back_kb(lang))
+        return
+
+    await _replace(chat_id, t(lang, "group_prompt", group=escape(groups.short_name(sub["group_id"]))),
+                   groups_kb(lang, found))
 
 
 # ── Language picker callback ──────────────────────────────────────────────────
@@ -236,100 +309,78 @@ async def cb_language(callback: types.CallbackQuery) -> None:
         if not sub["is_active"]:
             await storage.upsert_subscriber(chat_id, chosen)
 
-    await _apply_commands(chat_id, chosen)
-
     await callback.answer()
-    await _cleanup(chat_id)
-    msg = await bot.send_message(chat_id, t(chosen, "language_set"))
-    # immediately replace with home menu
-    await bot.delete_message(chat_id, msg.message_id)
-    await _send_home(chat_id, chosen)
+    await _apply_commands(chat_id, chosen)
+    await _send_home(chat_id, chosen, (sub or {}).get("group_id") or config.GROUP_ID)
 
 
 # ── Navigation callbacks ──────────────────────────────────────────────────────
 
 @dp.callback_query(F.data.startswith("nav:"))
 async def cb_nav(callback: types.CallbackQuery) -> None:
-    action  = callback.data.split(":", 1)[1]
-    chat_id = callback.message.chat.id
-    lang    = await _lang(chat_id)
+    action   = callback.data.split(":", 1)[1]
+    chat_id  = callback.message.chat.id
+    sub      = await _sub(chat_id)
+    lang     = sub["language"]
+    group_id = sub["group_id"]
 
     await callback.answer()
+    if action != "group":
+        _awaiting_group.discard(chat_id)
 
-    # ── Back / open menu ──────────────────────────────────────────────────────
     if action in ("back", "open"):
-        await _send_home(chat_id, lang)
+        await _send_home(chat_id, lang, group_id)
         return
 
-    # ── Language picker ───────────────────────────────────────────────────────
+    if action == "group":
+        await _prompt_for_group(chat_id, lang, group_id)
+        return
+
     if action == "language":
-        await _cleanup(chat_id)
-        msg = await bot.send_message(
-            chat_id, t(lang, "choose_language"), reply_markup=lang_kb()
-        )
-        _track(chat_id, msg.message_id)
+        await _replace(chat_id, t(lang, "choose_language"), lang_kb())
         return
 
-    # ── About / disclaimer ────────────────────────────────────────────────────
     if action == "about":
-        await _cleanup(chat_id)
-        msg = await bot.send_message(
-            chat_id,
-            t(lang, "about"),
-            reply_markup=back_kb(lang),
-            link_preview_options=_NO_PREVIEW,
-        )
-        _track(chat_id, msg.message_id)
+        await _replace(chat_id, t(lang, "about"), back_kb(lang), preview=False)
         return
 
-    # ── Today / Tomorrow ─────────────────────────────────────────────────────
     if action in ("today", "tomorrow"):
         try:
             if action == "today":
-                lessons = await _fetch(0)
                 target  = config.today()
+                lessons = await _fetch(group_id, 0)
             else:
                 target  = config.today() + timedelta(days=1)
-                lessons = await _fetch(_offset_for(target))
+                lessons = await _fetch(group_id, _offset_for(target))
             text = fmt_day(lessons, target, lang)
         except Exception as exc:
-            logger.error("nav:%s failed: %s", action, exc)
+            logger.error("nav:%s failed for %s: %s", action, group_id, exc)
             text = t(lang, "error")
 
-        await _cleanup(chat_id)
-        msg = await bot.send_message(chat_id, text, reply_markup=back_kb(lang))
-        _track(chat_id, msg.message_id)
+        await _replace(chat_id, text, back_kb(lang))
         return
 
-    # ── Week / Next week ──────────────────────────────────────────────────────
     if action in ("week", "nextweek"):
         offset = 0 if action == "week" else 1
         try:
-            lessons = await _fetch(offset)
+            lessons = await _fetch(group_id, offset)
         except Exception as exc:
-            logger.error("nav:%s failed: %s", action, exc)
-            await _cleanup(chat_id)
-            msg = await bot.send_message(chat_id, t(lang, "error"), reply_markup=back_kb(lang))
-            _track(chat_id, msg.message_id)
+            logger.error("nav:%s failed for %s: %s", action, group_id, exc)
+            await _replace(chat_id, t(lang, "error"), back_kb(lang))
             return
 
         await _cleanup(chat_id)
 
         if not lessons:
-            msg = await bot.send_message(
-                chat_id, t(lang, "no_lessons_week"), reply_markup=back_kb(lang)
-            )
-            _track(chat_id, msg.message_id)
+            await _replace(chat_id, t(lang, "no_lessons_week"), back_kb(lang))
             return
 
-        blocks   = fmt_week(lessons, lang)
-        msg_ids  = []
+        blocks  = fmt_week(lessons, lang)
+        msg_ids = []
         for i, block in enumerate(blocks):
             is_last = (i == len(blocks) - 1)
             msg = await bot.send_message(
-                chat_id,
-                block,
-                reply_markup=back_kb(lang) if is_last else None,
+                chat_id, block, reply_markup=back_kb(lang) if is_last else None
             )
             msg_ids.append(msg.message_id)
         _track(chat_id, *msg_ids)
@@ -340,15 +391,18 @@ async def cb_nav(callback: types.CallbackQuery) -> None:
 
 async def on_startup() -> None:
     await storage.init_db()
+    await bot.delete_webhook(drop_pending_updates=True)
     await _apply_default_commands()
+    await asyncio.to_thread(groups.refresh)
     sched.setup(bot)
 
-    try:
-        lessons = await _fetch(0)
-        await storage.find_newly_cancelled(lessons)
-        sched._schedule_reminders(bot, lessons)
-    except Exception as exc:
-        logger.error("Startup fetch failed: %s", exc)
+    for group_id in await storage.active_group_ids():
+        try:
+            lessons = await _fetch(group_id, 0)
+            await storage.find_newly_cancelled(group_id, lessons)
+            sched.schedule_reminders(bot, group_id, lessons)
+        except Exception as exc:
+            logger.error("Startup fetch failed for %s: %s", group_id, exc)
 
     logger.info(
         "Bot started. Morning notify at %s, checks every %d min.",

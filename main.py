@@ -14,7 +14,10 @@ logging.basicConfig(
 async def main() -> None:
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-    await dp.start_polling(bot, skip_updates=True)
+    # Pending updates are dropped in on_startup via delete_webhook();
+    # start_polling has no skip_updates in aiogram 3 — it silently became
+    # contextual data and skipped precisely nothing.
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
