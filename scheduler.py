@@ -15,6 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
 import fetcher
+import roster
 import storage
 from formatter import fmt_day, lesson_title
 from locales import t
@@ -52,7 +53,7 @@ async def _send(
     with_menu: bool = True,
     replace_previous: bool = True,
 ) -> None:
-    """Send text_fn(lang) to these subscribers; deactivate on Forbidden.
+    """Send text_fn(sub) to these subscribers; deactivate on Forbidden.
 
     replace_previous=False keeps whatever the bot already said in the chat.
     Alerts and reminders use that: wiping the chat before every single one meant
@@ -62,11 +63,14 @@ async def _send(
         chat_id = sub["chat_id"]
         lang    = sub["language"]
         try:
+            body = text_fn(sub)
+            if body is None:          # this lesson is not in their subgroups
+                continue
             if replace_previous:
                 await _cleanup_msgs(bot, chat_id)
             msg = await bot.send_message(
                 chat_id,
-                text_fn(lang),
+                body,
                 reply_markup=_menu_kb(lang) if with_menu else None,
             )
             _track_msgs(chat_id, msg.message_id)
@@ -86,8 +90,10 @@ async def job_morning_schedule(bot: Bot) -> None:
         try:
             lessons = await fetcher.fetch(group_id, 0, fresh=True)
 
-            def make_text(lang: str, _lessons=lessons) -> str:
-                return f"{t(lang, 'morning_greeting')}\n\n{fmt_day(_lessons, today, lang)}"
+            def make_text(sub: dict, _lessons=lessons) -> str:
+                lang = sub["language"]
+                mine = roster.personalise(sub, _lessons, config.SEMESTER_START)
+                return f"{t(lang, 'morning_greeting')}\n\n{fmt_day(mine, today, lang)}"
 
             await _send(bot, await _subscribers_of(group_id), make_text)
             schedule_reminders(bot, group_id, lessons)
@@ -104,7 +110,10 @@ async def job_check_cancellations(bot: Bot) -> None:
             subscribers = await _subscribers_of(group_id)
 
             for lesson in cancelled:
-                def make_text(lang: str, _lesson: Lesson = lesson) -> str:
+                def make_text(sub: dict, _lesson: Lesson = lesson) -> str:
+                    if not roster.keeps(sub, _lesson, config.SEMESTER_START):
+                        return None
+                    lang = sub["language"]
                     return (
                         f"{t(lang, 'cancelled_alert_title')}\n\n"
                         f"❌ <b>{escape(lesson_title(_lesson, lang))}</b>\n"
@@ -123,7 +132,10 @@ async def job_check_cancellations(bot: Bot) -> None:
 
 
 async def _send_reminder(bot: Bot, group_id: str, lesson: Lesson) -> None:
-    def make_text(lang: str) -> str:
+    def make_text(sub: dict) -> str:
+        if not roster.keeps(sub, lesson, config.SEMESTER_START):
+            return None
+        lang = sub["language"]
         lines = [
             t(lang, "reminder_title", minutes=config.REMINDER_MINUTES_BEFORE),
             f"📚 <b>{escape(lesson_title(lesson, lang))}</b>",

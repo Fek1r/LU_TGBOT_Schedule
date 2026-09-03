@@ -18,6 +18,7 @@ from aiogram.types import (
 import config
 import fetcher
 import groups
+import roster
 import storage
 import scheduler as sched
 from formatter import fmt_day, fmt_week
@@ -31,9 +32,10 @@ logger = logging.getLogger(__name__)
 # staple a preview card to it. It would not.
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
-# Chats that asked to change their group and whose next message is the query.
-# Deliberately in memory: losing it on restart costs the user one extra tap.
-_awaiting_group: set[int] = set()
+# Chats whose next message is a search query, and what they are searching for
+# ("group" or "me"). Deliberately in memory: losing it on restart costs the
+# user one extra tap.
+_awaiting: dict[int, str] = {}
 
 bot = Bot(
     token=config.TELEGRAM_BOT_TOKEN,
@@ -45,7 +47,7 @@ dp = Dispatcher()
 # ── Command menu ──────────────────────────────────────────────────────────────
 
 # Order matters — this is the order Telegram shows them in the ☰ menu.
-_COMMANDS = ("start", "group", "language", "about", "stop")
+_COMMANDS = ("start", "me", "group", "language", "about", "stop")
 
 
 def _command_list(lang: str) -> list[BotCommand]:
@@ -91,6 +93,9 @@ def nav_kb(lang: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=t(lang, "btn_nextweek"), callback_data="nav:nextweek"),
         ],
         [
+            InlineKeyboardButton(text=t(lang, "btn_me"),       callback_data="nav:me"),
+        ],
+        [
             InlineKeyboardButton(text=t(lang, "btn_group"),    callback_data="nav:group"),
         ],
         [
@@ -121,6 +126,19 @@ def groups_kb(lang: str, found: list[tuple[str, str]]) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=groups.short_name(gid), callback_data=f"group:{gid}")]
         for gid, _ in found
     ]
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def roster_kb(lang: str, found: list, current: str | None) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=roster.describe(s),
+                              callback_data=f"roster:{roster.make_ref(key, s['n'])}")]
+        for key, s in found
+    ]
+    if current:
+        rows.append([InlineKeyboardButton(text=t(lang, "btn_me_off"),
+                                          callback_data="roster:off")])
     rows.append([InlineKeyboardButton(text=t(lang, "btn_back"), callback_data="nav:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -165,6 +183,31 @@ async def _sub(chat_id: int) -> dict:
     """Subscriber row, or sensible defaults for someone who never pressed /start."""
     sub = await storage.get_subscriber(chat_id)
     return sub or {"language": config.DEFAULT_LANGUAGE, "group_id": config.GROUP_ID}
+
+
+def _student_of(sub: dict) -> dict | None:
+    return roster.student_for(sub)
+
+
+def _personalise(sub: dict, lessons: list[Lesson]) -> list[Lesson]:
+    return roster.personalise(sub, lessons, config.SEMESTER_START)
+
+
+def _gap_note(sub: dict, lessons: list[Lesson], lang: str, for_date: date) -> str:
+    """Warn when the distribution list has a class the website is missing."""
+    student = _student_of(sub)
+    if not student:
+        return ""
+    gaps = roster.missing_from_site(student, lessons, config.SEMESTER_START, for_date)
+    if not gaps:
+        return ""
+    lines = [
+        f"• {g['time']} {g['module']} "
+        + (f"гр. {g['label']}" if g["label"] else "")
+        + (f", {g['room']}." if g["room"] else "")
+        for g in gaps
+    ]
+    return "\n\n" + t(lang, "me_gap") + "\n" + "\n".join(lines)
 
 
 async def _send_home(chat_id: int, lang: str, group_id: str) -> None:
@@ -241,12 +284,42 @@ async def cmd_help(message: types.Message) -> None:
 # ── Group picking ─────────────────────────────────────────────────────────────
 
 async def _prompt_for_group(chat_id: int, lang: str, group_id: str) -> None:
-    _awaiting_group.add(chat_id)
+    _awaiting[chat_id] = "group"
     await _replace(
         chat_id,
         t(lang, "group_prompt", group=escape(groups.short_name(group_id))),
         back_kb(lang),
     )
+
+
+async def _prompt_for_me(chat_id: int, sub: dict) -> None:
+    lang = sub["language"]
+    _awaiting[chat_id] = "me"
+    student = _student_of(sub)
+    who = f"<b>{escape(roster.describe(student))}</b>" if student else t(lang, "me_off")
+    await _replace(chat_id, t(lang, "me_prompt", who=who), back_kb(lang))
+
+
+@dp.message(Command("me"))
+async def cmd_me(message: types.Message) -> None:
+    await _prompt_for_me(message.chat.id, await _sub(message.chat.id))
+
+
+@dp.callback_query(F.data.startswith("roster:"))
+async def cb_roster(callback: types.CallbackQuery) -> None:
+    ref     = callback.data.split(":", 1)[1]
+    chat_id = callback.message.chat.id
+    sub     = await _sub(chat_id)
+
+    await callback.answer()
+    _awaiting.pop(chat_id, None)
+
+    if await storage.get_subscriber(chat_id) is None:
+        await storage.upsert_subscriber(chat_id, sub["language"])
+    await storage.set_roster(chat_id, None if ref == "off" else ref)
+    logger.info("Chat %s pinned to roster %s", chat_id, ref)
+
+    await _send_home(chat_id, sub["language"], sub["group_id"])
 
 
 @dp.callback_query(F.data.startswith("group:"))
@@ -256,7 +329,7 @@ async def cb_group(callback: types.CallbackQuery) -> None:
     sub     = await _sub(chat_id)
 
     await callback.answer()
-    _awaiting_group.discard(chat_id)
+    _awaiting.pop(chat_id, None)
 
     if await storage.get_subscriber(chat_id) is None:
         await storage.upsert_subscriber(chat_id, sub["language"])
@@ -275,7 +348,8 @@ async def on_text(message: types.Message) -> None:
     sub     = await _sub(chat_id)
     lang    = sub["language"]
 
-    if chat_id not in _awaiting_group:
+    mode = _awaiting.get(chat_id)
+    if mode is None:
         await message.answer(t(lang, "hint"))
         return
 
@@ -284,6 +358,17 @@ async def on_text(message: types.Message) -> None:
         await message.delete()
     except TelegramBadRequest:
         pass
+
+    if mode == "me":
+        found = roster.search(query)
+        if not found:
+            await _replace(chat_id, t(lang, "me_none", query=escape(query)), back_kb(lang))
+            return
+        student = _student_of(sub)
+        who = f"<b>{escape(roster.describe(student))}</b>" if student else t(lang, "me_off")
+        await _replace(chat_id, t(lang, "me_prompt", who=who),
+                       roster_kb(lang, found, sub.get("roster_ref")))
+        return
 
     found = await asyncio.to_thread(groups.search, query)
     if not found:
@@ -325,8 +410,8 @@ async def cb_nav(callback: types.CallbackQuery) -> None:
     group_id = sub["group_id"]
 
     await callback.answer()
-    if action != "group":
-        _awaiting_group.discard(chat_id)
+    if action not in ("group", "me"):
+        _awaiting.pop(chat_id, None)
 
     if action in ("back", "open"):
         await _send_home(chat_id, lang, group_id)
@@ -334,6 +419,10 @@ async def cb_nav(callback: types.CallbackQuery) -> None:
 
     if action == "group":
         await _prompt_for_group(chat_id, lang, group_id)
+        return
+
+    if action == "me":
+        await _prompt_for_me(chat_id, sub)
         return
 
     if action == "language":
@@ -352,7 +441,8 @@ async def cb_nav(callback: types.CallbackQuery) -> None:
             else:
                 target  = config.today() + timedelta(days=1)
                 lessons = await _fetch(group_id, _offset_for(target))
-            text = fmt_day(lessons, target, lang)
+            text = fmt_day(_personalise(sub, lessons), target, lang) \
+                 + _gap_note(sub, lessons, lang, target)
         except Exception as exc:
             logger.error("nav:%s failed for %s: %s", action, group_id, exc)
             text = t(lang, "error")
@@ -369,6 +459,7 @@ async def cb_nav(callback: types.CallbackQuery) -> None:
             await _replace(chat_id, t(lang, "error"), back_kb(lang))
             return
 
+        lessons = _personalise(sub, lessons)
         await _cleanup(chat_id)
 
         if not lessons:
@@ -391,6 +482,7 @@ async def cb_nav(callback: types.CallbackQuery) -> None:
 
 async def on_startup() -> None:
     await storage.init_db()
+    roster.load()
     await bot.delete_webhook(drop_pending_updates=True)
     await _apply_default_commands()
     await asyncio.to_thread(groups.refresh)

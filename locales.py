@@ -36,6 +36,7 @@ LOCALES: dict[str, dict] = {
         ),
         "commands": {
             "start":    "Меню и подписка на уведомления",
+            "me":       "Указать свои подгруппы",
             "group":    "Выбрать свою группу",
             "language": "Сменить язык интерфейса",
             "about":    "Об авторе и дисклеймер",
@@ -46,6 +47,12 @@ LOCALES: dict[str, dict] = {
         "group_none":              "🤷 По запросу «{query}» ничего не нашлось. Попробуй короче — например только номер программы.",
         "group_set":               "✅ Группа: <code>{group}</code>",
         "hint":                    "🤔 Я понимаю только кнопки и команды. Жми /start.",
+        "btn_me":                  "👤 Мои подгруппы",
+        "btn_me_off":              "🔓 Показывать все пары потока",
+        "me_prompt":               "👤 <b>Твои подгруппы</b>\n\nСейчас: {who}\n\nНапиши свою фамилию из списка потока — например <code>Krasikovs</code>.\n\nПосле выбора бот покажет только твоё: общие лекции плюс твои маленькие группы (4, 4a, 12, E и прочие).",
+        "me_none":                 "🤷 В списках потока никого похожего на «{query}» нет. Проверь написание — фамилии там латиницей.",
+        "me_off":                  "не выбраны — показываю все пары потока",
+        "me_gap":                   "⚠️ <i>По распределению у тебя тут есть пара, но на сайте её нет:</i>",
         "days": {
             "Pr": "Понедельник", "Ot": "Вторник", "Tr": "Среда",
             "Ce": "Четверг",     "Pk": "Пятница",  "Se": "Суббота",
@@ -89,6 +96,7 @@ LOCALES: dict[str, dict] = {
         ),
         "commands": {
             "start":    "Menu and notification subscription",
+            "me":       "Set your subgroups",
             "group":    "Choose your group",
             "language": "Change interface language",
             "about":    "Author and disclaimer",
@@ -99,6 +107,12 @@ LOCALES: dict[str, dict] = {
         "group_none":              "🤷 Nothing matched “{query}”. Try something shorter — the programme number alone usually works.",
         "group_set":               "✅ Group: <code>{group}</code>",
         "hint":                    "🤔 I only understand buttons and commands. Send /start.",
+        "btn_me":                  "👤 My subgroups",
+        "btn_me_off":              "🔓 Show the whole year",
+        "me_prompt":               "👤 <b>Your subgroups</b>\n\nCurrently: {who}\n\nSend your surname as it appears in the year list — for example <code>Krasikovs</code>.\n\nAfter that the bot shows only your own: shared lectures plus your small groups (4, 4a, 12, E and the rest).",
+        "me_none":                 "🤷 Nobody in the year list looks like “{query}”. Check the spelling — the names are in Latvian.",
+        "me_off":                  "not set — showing every class of the year",
+        "me_gap":                   "⚠️ <i>The distribution list gives you a class here that the website does not show:</i>",
         "days": {
             "Pr": "Monday",   "Ot": "Tuesday",   "Tr": "Wednesday",
             "Ce": "Thursday", "Pk": "Friday",     "Se": "Saturday",
@@ -142,6 +156,7 @@ LOCALES: dict[str, dict] = {
         ),
         "commands": {
             "start":    "Izvēlne un paziņojumu abonēšana",
+            "me":       "Norādīt savas apakšgrupas",
             "group":    "Izvēlēties savu grupu",
             "language": "Mainīt saskarnes valodu",
             "about":    "Par autoru un atruna",
@@ -152,6 +167,12 @@ LOCALES: dict[str, dict] = {
         "group_none":              "🤷 Pēc “{query}” nekas netika atrasts. Mēģini īsāk — piemēram, tikai programmas numuru.",
         "group_set":               "✅ Grupa: <code>{group}</code>",
         "hint":                    "🤔 Es saprotu tikai pogas un komandas. Raksti /start.",
+        "btn_me":                  "👤 Manas apakšgrupas",
+        "btn_me_off":              "🔓 Rādīt visa kursa nodarbības",
+        "me_prompt":               "👤 <b>Tavas apakšgrupas</b>\n\nPašlaik: {who}\n\nRaksti savu uzvārdu, kā tas ir kursa sarakstā — piemēram <code>Krasikovs</code>.\n\nPēc tam bots rādīs tikai tavu: kopīgās lekcijas un tavas mazās grupas (4, 4a, 12, E un citas).",
+        "me_none":                 "🤷 Kursa sarakstā nav neviena, kas līdzinātos “{query}”. Pārbaudi rakstību.",
+        "me_off":                  "nav izvēlētas — rādu visa kursa nodarbības",
+        "me_gap":                   "⚠️ <i>Sadalījumā tev šeit ir nodarbība, bet vietnē tās nav:</i>",
         "days": {
             "Pr": "Pirmdiena",  "Ot": "Otrdiena",  "Tr": "Trešdiena",
             "Ce": "Ceturtdiena","Pk": "Piektdiena", "Se": "Sestdiena",

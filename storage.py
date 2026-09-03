@@ -21,9 +21,10 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     """Additive, idempotent schema catch-up for databases created earlier."""
     async with db.execute("PRAGMA table_info(subscribers)") as cur:
         columns = {row[1] async for row in cur}
-    if "group_id" not in columns:
-        await db.execute("ALTER TABLE subscribers ADD COLUMN group_id TEXT")
-        logger.info("Migrated subscribers: added group_id")
+    for column in ("group_id", "roster_ref"):
+        if column not in columns:
+            await db.execute(f"ALTER TABLE subscribers ADD COLUMN {column} TEXT")
+            logger.info("Migrated subscribers: added %s", column)
 
 
 async def init_db() -> None:
@@ -53,7 +54,7 @@ async def get_subscriber(chat_id: int) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT chat_id, is_active, language, group_id FROM subscribers WHERE chat_id = ?",
+            "SELECT chat_id, is_active, language, group_id, roster_ref FROM subscribers WHERE chat_id = ?",
             (chat_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -102,6 +103,15 @@ async def set_group(chat_id: int, group_id: str) -> None:
         await db.commit()
 
 
+async def set_roster(chat_id: int, roster_ref: str | None) -> None:
+    """Pin this chat to one person in the faculty roster — or unpin it."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE subscribers SET roster_ref = ? WHERE chat_id = ?", (roster_ref, chat_id)
+        )
+        await db.commit()
+
+
 async def deactivate(chat_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -114,7 +124,7 @@ async def get_active_subscribers() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT chat_id, language, group_id FROM subscribers WHERE is_active = 1"
+            "SELECT chat_id, language, group_id, roster_ref FROM subscribers WHERE is_active = 1"
         ) as cur:
             return [_with_default(dict(r)) for r in await cur.fetchall()]
 

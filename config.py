@@ -16,6 +16,8 @@ DEFAULT_LANGUAGE        = os.getenv("DEFAULT_LANGUAGE", "ru")
 # lekciju-saraksts.lu.lv always speaks Riga wall-clock time. The server hosting
 # the bot is under no obligation to agree (Railway happily runs on UTC), so
 # every "now" and "today" in this bot goes through here instead of asking the OS.
+SEMESTER_START = date.fromisoformat(os.getenv("SEMESTER_START", "2026-08-31"))
+
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Riga")
 TZ       = ZoneInfo(TIMEZONE)
 
