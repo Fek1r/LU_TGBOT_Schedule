@@ -1,0 +1,21 @@
+.git
+.gitignore
+venv/
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Secrets and local state never belong in an image layer.
+.env
+*.db
+*.log
+bot.log
+
+# Dev-only bits
+requirements-dev.txt
+launchd.plist
+README.md
+.DS_Store
+**/.DS_Store

@@ -1,0 +1,30 @@
+services:
+  bot:
+    build: .
+    image: lu-schedule-bot
+    container_name: lu-schedule-bot
+    restart: unless-stopped
+
+    # Token and settings live here; see .env.example.
+    env_file: .env
+
+    # These two override whatever .env says: inside the container the only
+    # writable, persistent place is the volume.
+    environment:
+      DB_PATH: /data/bot.db
+      HEARTBEAT_FILE: /data/heartbeat
+
+    volumes:
+      - bot-data:/data
+
+    # A small VPS should not lose its disk to a year of bot logs.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    stop_grace_period: 20s
+
+volumes:
+  bot-data:

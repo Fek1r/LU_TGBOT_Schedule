@@ -5,7 +5,9 @@ each job walks the distinct groups people actually subscribed to and fans the
 result out only to the subscribers of that group.
 """
 import logging
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from html import escape
 
 from aiogram import Bot
@@ -41,6 +43,18 @@ def _menu_kb(lang: str) -> InlineKeyboardMarkup:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def beat() -> None:
+    """Prove the bot is still making its rounds. See tools/healthcheck.py."""
+    if not config.HEARTBEAT_FILE:
+        return
+    try:
+        path = Path(config.HEARTBEAT_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(int(time.time())))
+    except OSError as exc:
+        logger.warning("Could not write heartbeat: %s", exc)
+
 
 async def _subscribers_of(group_id: str) -> list[dict]:
     return [s for s in await storage.get_active_subscribers() if s["group_id"] == group_id]
@@ -129,6 +143,7 @@ async def job_check_cancellations(bot: Bot) -> None:
             schedule_reminders(bot, group_id, lessons)
         except Exception as exc:
             logger.error("Cancellation check failed for %s: %s", group_id, exc)
+    beat()
 
 
 async def _send_reminder(bot: Bot, group_id: str, lesson: Lesson) -> None:

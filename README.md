@@ -304,6 +304,51 @@ are not in the default one, then `/me` to narrow it down to your subgroups.
 
 ## Deployment
 
+### Docker (recommended for your own server)
+
+```bash
+git clone https://github.com/Fek1r/LU_TGBOT_Schedule.git
+cd LU_TGBOT_Schedule
+cp .env.example .env      # fill in TELEGRAM_BOT_TOKEN
+docker compose up -d
+```
+
+That is the whole deployment. `docker-compose.yml` already:
+
+- keeps the database in a named volume (`bot-data`), so redeploys do not wipe your subscribers
+- overrides `DB_PATH` and `HEARTBEAT_FILE` to point inside that volume
+- restarts the container `unless-stopped`
+- caps the logs at 3 x 10 MB, which a small VPS will thank you for
+
+Day-to-day:
+
+```bash
+docker compose logs -f              # follow the log
+docker compose ps                   # STATUS shows healthy / unhealthy
+docker compose up -d --build        # deploy a new version after git pull
+docker compose down                 # stop; the volume survives
+```
+
+The bot listens on **no port** — it polls Telegram, so there is nothing to
+publish and no reverse proxy to configure.
+
+**Health.** A polling bot cannot be probed over HTTP, so the cancellation job
+touches a heartbeat file on every round and `tools/healthcheck.py` checks how
+old it is. Three missed rounds and the container reports `unhealthy`, which
+catches a wedged process that never actually exited. The probe deliberately
+never calls Telegram: a second `getUpdates` would be a competing poller, and
+Telegram settles those by killing one of them.
+
+**Backup.** Everything worth keeping is one SQLite file:
+
+```bash
+docker compose cp bot:/data/bot.db ./bot-backup.db
+```
+
+**Run one instance.** Two containers, or a container plus a Railway deploy, on
+the same token means constant 409 conflicts and a bot that answers every other
+tap.
+
 ### Railway
 
 Connect the repository, and check **Settings → Source** actually points at the
@@ -369,7 +414,9 @@ lu-schedule-bot/
 ├── bot.py               — aiogram handlers, inline navigation
 ├── msg_tracker.py       — remembers what to delete before the next message
 ├── data/                — rosters built from the faculty PDFs
-├── tools/               — build_roster.py: PDF to JSON, run by hand
+├── tools/               — build_roster.py (PDF to JSON), healthcheck.py
+├── Dockerfile           — python:3.12-slim, non-root, healthcheck
+├── docker-compose.yml   — volume, restart policy, log rotation
 ├── launchd.plist        — optional macOS service
 ├── .env.example         — environment variables template
 ├── requirements.txt

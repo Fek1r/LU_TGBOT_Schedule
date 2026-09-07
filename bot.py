@@ -496,6 +496,7 @@ async def on_startup() -> None:
         except Exception as exc:
             logger.error("Startup fetch failed for %s: %s", group_id, exc)
 
+    sched.beat()          # so the healthcheck has something during start-period
     logger.info(
         "Bot started. Morning notify at %s, checks every %d min.",
         config.MORNING_NOTIFY_TIME,
